@@ -1,7 +1,7 @@
 import pytest
 
-from autovideodownloadservice.exceptions import InvalidChannelUrlError
-from autovideodownloadservice.scraper.urls import normalize_channel_videos_url
+from youtubealerts.exceptions import InvalidChannelUrlError
+from youtubealerts.scraper.urls import normalize_channel_videos_url
 
 EXPECTED = "https://www.youtube.com/@channelname/videos"
 

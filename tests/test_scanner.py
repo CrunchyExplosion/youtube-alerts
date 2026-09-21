@@ -1,7 +1,7 @@
 import json
 
-from autovideodownloadservice.models import Video
-from autovideodownloadservice.scanner import scan_once
+from youtubealerts.models import Video
+from youtubealerts.scanner import scan_once
 
 
 def _video(video_id, members_only=False):

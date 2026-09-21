@@ -1,9 +1,10 @@
 # Deploying to Azure at Minimum Cost
 
 Target: **Azure Functions, Consumption plan, Timer Trigger** — replaces the local
-`avds --watch` loop with a scheduled cloud function. Expected cost: **$0–$1/month**
+`youtube-alerts --watch` loop with a scheduled cloud function. Expected cost: **$0–$1/month**
 (free execution grant covers this workload; only a tiny Storage Account cost applies).
-Includes a **built-in on/off toggle** — no redeploy needed to pause scanning.
+Includes a **built-in on/off toggle** and a **channel that's changeable from the
+Portal** — neither requires touching code or redeploying.
 
 ## Architecture
 
@@ -12,7 +13,7 @@ Azure Function App (Consumption / Y1, Linux, Python)
   └─ Timer Trigger "ScanTimer" (e.g. every 5 min, CRON in host config)
        └─ calls scan_once() [reused from scanner.py, unchanged logic]
             ├─ fetch_latest_video()  [scraper/* — unchanged]
-            ├─ state  → Azure Table Storage (replaces local .avds-state.json)
+            ├─ state  → Azure Table Storage (replaces local .yta-state.json)
             └─ notify → same SMTP EmailNotifier (creds from App Settings, not .env)
 
 Storage Account (required by Functions runtime + hosts the state table)
@@ -27,11 +28,11 @@ Storage Account (required by Functions runtime + hosts the state table)
 ## Step 1 — Create the resource group and storage account
 
 ```powershell
-az group create -n rg-avds -l eastus
+az group create -n rg-youtube-alerts -l eastus
 
 az storage account create `
-  -n stavds$(Get-Random -Maximum 99999) `
-  -g rg-avds -l eastus --sku Standard_LRS
+  -n stytalerts$(Get-Random -Maximum 99999) `
+  -g rg-youtube-alerts -l eastus --sku Standard_LRS
 ```
 
 Note the storage account name it prints — you'll reuse it below (`$STORAGE`).
@@ -40,7 +41,7 @@ Note the storage account name it prints — you'll reuse it below (`$STORAGE`).
 
 ```powershell
 az functionapp create `
-  -g rg-avds -n func-avds$(Get-Random -Maximum 99999) `
+  -g rg-youtube-alerts -n func-youtube-alerts$(Get-Random -Maximum 99999) `
   --storage-account $STORAGE `
   --consumption-plan-location eastus `
   --runtime python --runtime-version 3.11 `
@@ -59,22 +60,27 @@ Only `scanner.py`'s state I/O changes; `scraper/`, `models.py`, `exceptions.py`,
 **`function_app.py`** (new file, project root):
 
 ```python
+import os
 import azure.functions as func
 import logging
-from autovideodownloadservice.scanner import scan_once, EmailNotifier
+from youtubealerts.scanner import scan_once, EmailNotifier
 from table_state import load_state, save_state  # new helper, see below
 
 app = func.FunctionApp()
-CHANNEL_URL = "@ANINewsIndia"  # or read from an App Setting
 
 @app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False)
 def ScanTimer(timer: func.TimerRequest) -> None:
+    channel_url = os.environ["YTA_CHANNEL_URL"]  # read fresh on every run, no redeploy to change
     try:
-        scan_once(CHANNEL_URL, state_file=None, notify=EmailNotifier().send,
+        scan_once(channel_url, state_file=None, notify=EmailNotifier().send,
                    fetch=..., )  # wire load_state/save_state in scan_once via DI
     except Exception:
         logging.exception("Scan failed")
 ```
+
+The channel is deliberately **not** hardcoded — it's read from the
+`YTA_CHANNEL_URL` app setting on every timer firing, so changing it is a
+config edit, not a code change (see Step 6b below).
 
 **State storage swap** — replace the local-file `_load_state`/`_save_state` in
 `scanner.py` with Azure Table Storage (one row per channel, partition key =
@@ -88,12 +94,13 @@ Add to `requirements.txt`: `azure-functions`, `azure-data-tables`.
 ## Step 4 — Move secrets to App Settings (not `.env`)
 
 ```powershell
-az functionapp config appsettings set -g rg-avds -n <func-app-name> --settings `
-  AVDS_SMTP_HOST="smtp.gmail.com" `
-  AVDS_SMTP_PORT="587" `
-  AVDS_SMTP_USERNAME="you@gmail.com" `
-  AVDS_SMTP_PASSWORD="<gmail app password>" `
-  AVDS_ALERT_TO="you@gmail.com"
+az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> --settings `
+  YTA_CHANNEL_URL="@ANINewsIndia" `
+  YTA_SMTP_HOST="smtp.gmail.com" `
+  YTA_SMTP_PORT="587" `
+  YTA_SMTP_USERNAME="you@gmail.com" `
+  YTA_SMTP_PASSWORD="<gmail app password>" `
+  YTA_ALERT_TO="you@gmail.com"
 ```
 
 For production hygiene, put the password in Key Vault and reference it with
@@ -117,17 +124,39 @@ button at the top of the function's Overview page.
 
 ```powershell
 # Turn scanning OFF
-az functionapp config appsettings set -g rg-avds -n <func-app-name> `
+az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
   --settings "AzureWebJobs.ScanTimer.Disabled=true"
 
 # Turn scanning back ON
-az functionapp config appsettings set -g rg-avds -n <func-app-name> `
+az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
   --settings "AzureWebJobs.ScanTimer.Disabled=false"
 ```
 
 This flips an app setting the Functions host checks before firing the timer —
 no redeploy, no code touch, and while disabled you pay **nothing** for that
 function (Consumption plan bills executions, not idle time).
+
+## Step 6b — Changing the YouTube channel (no code, no redeploy)
+
+Since the channel is read from `YTA_CHANNEL_URL` on every run, switching the
+watched channel is the same kind of edit as the toggle — a config change, not
+a code change. Note the new channel takes effect on the *next* timer firing,
+and because the state table is keyed by channel, the first scan after a
+switch is treated as a fresh baseline (no notification), same as first-run
+behavior locally.
+
+**Portal:** Function App → Configuration → Application settings →
+`YTA_CHANNEL_URL` → edit the value → Save.
+
+**CLI equivalent:**
+
+```powershell
+az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
+  --settings "YTA_CHANNEL_URL=@SomeOtherChannel"
+```
+
+Accepts anything `normalize_channel_videos_url()` already accepts locally —
+`@handle`, bare name, `UC...` id, or a full channel URL.
 
 ## Cost breakdown
 
@@ -142,7 +171,7 @@ function (Consumption plan bills executions, not idle time).
 ## Step 7 — Cleanup (if you ever want to stop entirely)
 
 ```powershell
-az group delete -n rg-avds --yes --no-wait
+az group delete -n rg-youtube-alerts --yes --no-wait
 ```
 
 Deletes everything (Function App + Storage Account) in one shot, no orphaned

@@ -15,7 +15,7 @@ from .scraper import fetch_latest_video
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="avds",
+        prog="youtube-alerts",
         description="Print the latest video uploaded to a YouTube channel.",
     )
     parser.add_argument(
@@ -37,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--state-file",
         type=Path,
-        default=Path(".avds-state.json"),
+        default=Path(".yta-state.json"),
         help="File used to remember the last seen video.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")

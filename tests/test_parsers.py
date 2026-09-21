@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from autovideodownloadservice.exceptions import NoVideosFoundError
-from autovideodownloadservice.scraper.parsers import (
+from youtubealerts.exceptions import NoVideosFoundError
+from youtubealerts.scraper.parsers import (
     extract_channel_id,
     extract_json_object,
     extract_yt_initial_data,

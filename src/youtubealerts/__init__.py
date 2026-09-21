@@ -1,4 +1,4 @@
-"""Auto video download service.
+"""YouTube alerts.
 
 Currently exposes a single capability: find the latest video uploaded to a
 YouTube channel. The public surface is kept small so a future API layer can

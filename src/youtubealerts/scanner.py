@@ -22,20 +22,20 @@ class EmailNotifier:
     """Send new-video notifications through an SMTP server."""
 
     def __init__(self) -> None:
-        self.host = os.environ.get("AVDS_SMTP_HOST")
-        self.port = int(os.environ.get("AVDS_SMTP_PORT", "587"))
-        self.username = os.environ.get("AVDS_SMTP_USERNAME")
-        self.password = os.environ.get("AVDS_SMTP_PASSWORD")
-        self.sender = os.environ.get("AVDS_ALERT_FROM") or self.username
-        self.recipient = os.environ.get("AVDS_ALERT_TO")
+        self.host = os.environ.get("YTA_SMTP_HOST")
+        self.port = int(os.environ.get("YTA_SMTP_PORT", "587"))
+        self.username = os.environ.get("YTA_SMTP_USERNAME")
+        self.password = os.environ.get("YTA_SMTP_PASSWORD")
+        self.sender = os.environ.get("YTA_ALERT_FROM") or self.username
+        self.recipient = os.environ.get("YTA_ALERT_TO")
 
         missing = [
             name
             for name, value in (
-                ("AVDS_SMTP_HOST", self.host),
-                ("AVDS_SMTP_USERNAME", self.username),
-                ("AVDS_SMTP_PASSWORD", self.password),
-                ("AVDS_ALERT_TO", self.recipient),
+                ("YTA_SMTP_HOST", self.host),
+                ("YTA_SMTP_USERNAME", self.username),
+                ("YTA_SMTP_PASSWORD", self.password),
+                ("YTA_ALERT_TO", self.recipient),
             )
             if not value
         ]
@@ -120,7 +120,7 @@ def scan_once(
 def run_forever(
     channel_url: str,
     interval_seconds: int = 300,
-    state_file: Path = Path(".avds-state.json"),
+    state_file: Path = Path(".yta-state.json"),
     notify: Optional[Callable[[Video], None]] = None,
     fetch: Callable[[str], Video] = fetch_latest_video,
     sleep: Callable[[float], None] = time.sleep,

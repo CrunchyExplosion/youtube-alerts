@@ -1,4 +1,4 @@
-# Codebase Guide — autovideodownloadservice
+# Codebase Guide — youtube-alerts
 
 One job: given a YouTube channel, find its **latest uploaded video**. Optionally
 watch the channel forever and email you when a new video appears.
@@ -27,29 +27,29 @@ and network code is a thin, separately-testable layer around it.
 
 ## File-by-file
 
-- **[cli.py](../src/autovideodownloadservice/cli.py)** — argparse CLI (`avds`). Builds args, calls
+- **[cli.py](../src/youtubealerts/cli.py)** — argparse CLI (`youtube-alerts`). Builds args, calls
   `fetch_latest_video` (or `run_forever` for `--watch`), prints human text or `--json`.
-- **[config.py](../src/autovideodownloadservice/config.py)** — constants only: URL templates, request timeout,
+- **[config.py](../src/youtubealerts/config.py)** — constants only: URL templates, request timeout,
   a browser-like `User-Agent`/headers (YouTube serves simpler HTML to
   "real browsers"), and `hl=en&gl=US` query params to force English markup.
-- **[models.py](../src/autovideodownloadservice/models.py)** — `Video`, a frozen dataclass with every field the scraper can
+- **[models.py](../src/youtubealerts/models.py)** — `Video`, a frozen dataclass with every field the scraper can
   fill in (title, id, url, channel, published/duration/views as raw text,
   thumbnail, `members_only` flag, and `source` = `"html"` or `"feed"`).
   `.to_dict()` powers `--json`.
-- **[exceptions.py](../src/autovideodownloadservice/exceptions.py)** — `ScraperError` base class, with `InvalidChannelUrlError`,
+- **[exceptions.py](../src/youtubealerts/exceptions.py)** — `ScraperError` base class, with `InvalidChannelUrlError`,
   `ChannelFetchError` (network), `NoVideosFoundError` (parsed but empty).
   CLI catches `ScraperError` and prints a clean `Error: ...` instead of a traceback.
-- **[scraper/urls.py](../src/autovideodownloadservice/scraper/urls.py)** — `normalize_channel_videos_url()`. Accepts almost anything:
+- **[scraper/urls.py](../src/youtubealerts/scraper/urls.py)** — `normalize_channel_videos_url()`. Accepts almost anything:
   bare `@handle`, bare channel name, `UC...` channel id, host-less
   `youtube.com/c/Name`, or a full URL with any tab (`/streams`, `/about`, etc).
   Strips known tabs and always appends `/videos` so results are newest-first.
   Rejects non-channel URLs (`/watch`, `/playlist`, ...).
-- **[scraper/youtube.py](../src/autovideodownloadservice/scraper/youtube.py)** — the only place that touches the network
+- **[scraper/youtube.py](../src/youtubealerts/scraper/youtube.py)** — the only place that touches the network
   (`fetch_latest_video`). Fetches the page, tries HTML parsing first, and if
   YouTube served a JS-only/consent shell with no video renderers, falls back
   to the channel's Atom uploads feed (`/feeds/videos.xml?channel_id=...`).
   Accepts an optional `requests.Session` (used by tests/mocking).
-- **[scraper/parsers.py](../src/autovideodownloadservice/scraper/parsers.py)** — all the fragile-but-isolated HTML/JSON/XML parsing:
+- **[scraper/parsers.py](../src/youtubealerts/scraper/parsers.py)** — all the fragile-but-isolated HTML/JSON/XML parsing:
   - `extract_yt_initial_data`: regex-locates `ytInitialData = {...}` in the raw
     HTML, then does a hand-rolled string-aware brace scanner
     (`extract_json_object`) to pull out the exact JSON object (can't use
@@ -63,10 +63,10 @@ and network code is a thin, separately-testable layer around it.
     `xml.etree.ElementTree` using YouTube's `yt:`/`media:` namespaces.
   - `_is_members_only`: recursively scans all strings in a video node for
     "member"+"only" to flag members-only uploads.
-- **[scanner.py](../src/autovideodownloadservice/scanner.py)** — the `--watch` feature:
-  - `EmailNotifier`: reads `AVDS_SMTP_*` / `AVDS_ALERT_*` env vars (via
+- **[scanner.py](../src/youtubealerts/scanner.py)** — the `--watch` feature:
+  - `EmailNotifier`: reads `YTA_SMTP_*` / `YTA_ALERT_*` env vars (via
     `python-dotenv` + `.env`), sends a plain-text email over SMTP+STARTTLS.
-  - State file (default `.avds-state.json`): stores last seen `video_id` +
+  - State file (default `.yta-state.json`): stores last seen `video_id` +
     `members_only`, written atomically (write to `.tmp`, then `replace`).
   - `scan_once()`: fetch → compare to saved state → decide whether to notify.
     First-ever scan only saves a baseline (no email). Notifies only when the
@@ -76,13 +76,13 @@ and network code is a thin, separately-testable layer around it.
   - `run_forever()`: infinite loop of `scan_once` + `sleep(interval)`;
     swallows and logs exceptions per-iteration so one bad scan doesn't kill
     the watcher.
-- **[__init__.py](../src/autovideodownloadservice/__init__.py) / [__main__.py](../src/autovideodownloadservice/__main__.py)** — package exports (`Video`,
-  `fetch_latest_video`) and `python -m autovideodownloadservice` entry point.
+- **[__init__.py](../src/youtubealerts/__init__.py) / [__main__.py](../src/youtubealerts/__main__.py)** — package exports (`Video`,
+  `fetch_latest_video`) and `python -m youtubealerts` entry point.
 
 ## Data flow example
 
 ```
-avds "@MKBHD" --json
+youtube-alerts "@MKBHD" --json
   → normalize_channel_videos_url("@MKBHD")
       → "https://www.youtube.com/@MKBHD/videos"
   → GET that URL with browser headers + hl=en
