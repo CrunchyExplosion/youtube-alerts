@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autovideodownloadservice"
+version = "0.1.0"
+description = "Scrapes a YouTube channel page and reports the latest uploaded video."
+requires-python = ">=3.9"
+dependencies = ["python-dotenv>=1.0.1", "requests>=2.32.0"]
+
+[project.scripts]
+avds = "autovideodownloadservice.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
