@@ -63,8 +63,9 @@ def _format_human(video: Video) -> str:
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     if args.watch:

@@ -130,6 +130,7 @@ def run_forever(
         raise ValueError("interval_seconds must be greater than zero")
     notify = notify or EmailNotifier().send
 
+    logger.info("Watching %s every %ss (Ctrl+C to stop)", channel_url, interval_seconds)
     while True:
         try:
             scan_once(channel_url, state_file, notify, fetch)
