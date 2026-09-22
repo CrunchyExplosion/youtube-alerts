@@ -1,0 +1,15 @@
+.git*
+.vscode
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+local.settings.json
+.env
+.yta-state.json
+.yta-state.json*
+*.log
+.python_packages
+*.egg-info

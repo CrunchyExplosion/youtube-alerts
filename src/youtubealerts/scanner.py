@@ -7,7 +7,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple, Union
 
 from dotenv import load_dotenv
 
@@ -61,42 +61,60 @@ class EmailNotifier:
             smtp.send_message(message)
 
 
-def _load_state(state_file: Path) -> tuple[Optional[str], Optional[bool]]:
-    if not state_file.exists():
-        return None, None
-    with state_file.open(encoding="utf-8") as handle:
-        state = json.load(handle)
-    video_id = state.get("video_id")
-    members_only = state.get("members_only")
-    return (
-        video_id if isinstance(video_id, str) else None,
-        members_only if isinstance(members_only, bool) else None,
-    )
+StateSnapshot = Tuple[Optional[str], Optional[bool]]
 
 
-def _save_state(state_file: Path, video: Video) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary_file = state_file.with_suffix(state_file.suffix + ".tmp")
-    with temporary_file.open("w", encoding="utf-8") as handle:
-        json.dump(
-            {"video_id": video.video_id, "members_only": video.members_only},
-            handle,
+class FileStateStore:
+    """Remembers the last seen video in a local JSON file."""
+
+    def __init__(self, state_file: Union[Path, str]) -> None:
+        self.state_file = Path(state_file)
+
+    def load(self, channel_url: str) -> StateSnapshot:
+        if not self.state_file.exists():
+            return None, None
+        with self.state_file.open(encoding="utf-8") as handle:
+            state = json.load(handle)
+        video_id = state.get("video_id")
+        members_only = state.get("members_only")
+        return (
+            video_id if isinstance(video_id, str) else None,
+            members_only if isinstance(members_only, bool) else None,
         )
-    temporary_file.replace(state_file)
+
+    def save(self, channel_url: str, video: Video) -> None:
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_file = self.state_file.with_suffix(self.state_file.suffix + ".tmp")
+        with temporary_file.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {"video_id": video.video_id, "members_only": video.members_only},
+                handle,
+            )
+        temporary_file.replace(self.state_file)
+
+
+def _coerce_store(state: Union["FileStateStore", Path, str]):
+    return FileStateStore(state) if isinstance(state, (Path, str)) else state
 
 
 def scan_once(
     channel_url: str,
-    state_file: Path,
+    state: Union[FileStateStore, Path, str],
     notify: Callable[[Video], None],
     fetch: Callable[[str], Video] = fetch_latest_video,
 ) -> bool:
-    """Check once and return whether a new video notification was sent."""
+    """Check once and return whether a new video notification was sent.
+
+    ``state`` is either a path (local runs) or any object exposing
+    ``load(channel_url)`` / ``save(channel_url, video)`` — e.g. ``TableStateStore``
+    when running in Azure Functions.
+    """
+    store = _coerce_store(state)
     video = fetch(channel_url)
-    previous_video_id, previous_members_only = _load_state(state_file)
+    previous_video_id, previous_members_only = store.load(channel_url)
 
     if previous_video_id is None:
-        _save_state(state_file, video)
+        store.save(channel_url, video)
         logger.info("Monitoring latest video: %s", video.title)
         return False
 
@@ -107,12 +125,12 @@ def scan_once(
         return False
 
     if video.members_only is not False:
-        _save_state(state_file, video)
+        store.save(channel_url, video)
         logger.info("Skipping non-public video %s", video.video_id)
         return False
 
     notify(video)
-    _save_state(state_file, video)
+    store.save(channel_url, video)
     logger.info("Notification sent for %s", video.video_id)
     return True
 

@@ -1,178 +1,185 @@
-# Deploying to Azure at Minimum Cost
+# Deploying youtube-alerts to Azure Functions
 
-Target: **Azure Functions, Consumption plan, Timer Trigger** — replaces the local
-`youtube-alerts --watch` loop with a scheduled cloud function. Expected cost: **$0–$1/month**
-(free execution grant covers this workload; only a tiny Storage Account cost applies).
-Includes a **built-in on/off toggle** and a **channel that's changeable from the
-Portal** — neither requires touching code or redeploying.
+This guide deploys `youtube-alerts` as an Azure Functions timer app. The
+function checks a YouTube channel every five minutes and sends an email when a
+new public video is found.
 
-## Architecture
+The deployment uses an Azure Functions Consumption plan and the Function App's
+storage account for both Functions runtime data and alert state. The local
+`.yta-state.json` file is not used in Azure.
 
-```
-Azure Function App (Consumption / Y1, Linux, Python)
-  └─ Timer Trigger "ScanTimer" (e.g. every 5 min, CRON in host config)
-       └─ calls scan_once() [reused from scanner.py, unchanged logic]
-            ├─ fetch_latest_video()  [scraper/* — unchanged]
-            ├─ state  → Azure Table Storage (replaces local .yta-state.json)
-            └─ notify → same SMTP EmailNotifier (creds from App Settings, not .env)
+## What you will create
 
-Storage Account (required by Functions runtime + hosts the state table)
-```
+- A resource group
+- A general-purpose Storage Account
+- A Linux Azure Function App on the Consumption plan
+- One timer-triggered function named `ScanTimer`
+- An Azure Table named `ytastate`, created automatically on the first run
+
+The repository already contains the Azure entry point in `function_app.py`,
+the Functions host configuration in `host.json`, and the Azure Table state
+store in `src/youtubealerts/table_state.py`.
 
 ## Prerequisites
 
-- Azure CLI (`az`) logged in: `az login`
-- Azure Functions Core Tools v4: `npm i -g azure-functions-core-tools@4 --unsafe-perm true`
-- Python 3.11 locally (match the Function App runtime version)
+Install and sign in to the following tools:
 
-## Step 1 — Create the resource group and storage account
+- Python 3.11
+- Azure CLI: <https://learn.microsoft.com/cli/azure/install-azure-cli>
+- Azure Functions Core Tools v4:
+  `npm install -g azure-functions-core-tools@4 --unsafe-perm true`
+
+Then sign in:
 
 ```powershell
-az group create -n rg-youtube-alerts -l eastus
-
-az storage account create `
-  -n stytalerts$(Get-Random -Maximum 99999) `
-  -g rg-youtube-alerts -l eastus --sku Standard_LRS
+az login
 ```
 
-Note the storage account name it prints — you'll reuse it below (`$STORAGE`).
+Use a unique name for the Function App and Storage Account. Azure resource
+names are shared globally and may already be taken.
 
-## Step 2 — Create the Function App (Consumption plan = pay-per-execution)
+## 1. Create Azure resources
+
+Set deployment variables in PowerShell:
+
+```powershell
+$RESOURCE_GROUP = "rg-youtube-alerts"
+$LOCATION = "eastus"
+$STORAGE = "stytalerts$(Get-Random -Maximum 99999)"
+$FUNCTION_APP = "func-youtube-alerts$(Get-Random -Maximum 99999)"
+```
+
+Create the resource group and storage account:
+
+```powershell
+az group create --name $RESOURCE_GROUP --location $LOCATION
+
+az storage account create `
+  --name $STORAGE `
+  --resource-group $RESOURCE_GROUP `
+  --location $LOCATION `
+  --sku Standard_LRS
+```
+
+Create the Function App:
 
 ```powershell
 az functionapp create `
-  -g rg-youtube-alerts -n func-youtube-alerts$(Get-Random -Maximum 99999) `
+  --resource-group $RESOURCE_GROUP `
+  --name $FUNCTION_APP `
   --storage-account $STORAGE `
-  --consumption-plan-location eastus `
-  --runtime python --runtime-version 3.11 `
+  --consumption-plan-location $LOCATION `
+  --runtime python `
+  --runtime-version 3.11 `
   --functions-version 4 `
   --os-type Linux
 ```
 
-`--consumption-plan-location` is what makes this serverless/pay-per-use — do
-**not** use `--plan`/App Service Plan flags, that creates always-on paid compute.
+The `--consumption-plan-location` option creates a pay-per-execution hosting
+plan. Do not add `--plan` unless you intentionally want a separately managed
+App Service plan.
 
-## Step 3 — Adapt the code (minimal change)
+## 2. Configure application settings
 
-Only `scanner.py`'s state I/O changes; `scraper/`, `models.py`, `exceptions.py`,
-`config.py` are reused as-is. Add a new entry point instead of `cli.py`:
-
-**`function_app.py`** (new file, project root):
-
-```python
-import os
-import azure.functions as func
-import logging
-from youtubealerts.scanner import scan_once, EmailNotifier
-from table_state import load_state, save_state  # new helper, see below
-
-app = func.FunctionApp()
-
-@app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False)
-def ScanTimer(timer: func.TimerRequest) -> None:
-    channel_url = os.environ["YTA_CHANNEL_URL"]  # read fresh on every run, no redeploy to change
-    try:
-        scan_once(channel_url, state_file=None, notify=EmailNotifier().send,
-                   fetch=..., )  # wire load_state/save_state in scan_once via DI
-    except Exception:
-        logging.exception("Scan failed")
-```
-
-The channel is deliberately **not** hardcoded — it's read from the
-`YTA_CHANNEL_URL` app setting on every timer firing, so changing it is a
-config edit, not a code change (see Step 6b below).
-
-**State storage swap** — replace the local-file `_load_state`/`_save_state` in
-`scanner.py` with Azure Table Storage (one row per channel, partition key =
-channel, row key = fixed `"state"`), using the `azure-data-tables` SDK and the
-Function App's own storage connection string (`AzureWebJobsStorage` app
-setting — no new secret needed). This is the only structural change; `scan_once`'s
-signature and decision logic stay identical.
-
-Add to `requirements.txt`: `azure-functions`, `azure-data-tables`.
-
-## Step 4 — Move secrets to App Settings (not `.env`)
+The Function App reads the watched channel and SMTP settings from application
+settings. Replace the example values with your own values:
 
 ```powershell
-az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> --settings `
-  YTA_CHANNEL_URL="@ANINewsIndia" `
-  YTA_SMTP_HOST="smtp.gmail.com" `
-  YTA_SMTP_PORT="587" `
-  YTA_SMTP_USERNAME="you@gmail.com" `
-  YTA_SMTP_PASSWORD="<gmail app password>" `
-  YTA_ALERT_TO="you@gmail.com"
+az functionapp config appsettings set `
+  --resource-group $RESOURCE_GROUP `
+  --name $FUNCTION_APP `
+  --settings `
+    YTA_CHANNEL_URL="@MKBHD" `
+    YTA_SMTP_HOST="smtp.gmail.com" `
+    YTA_SMTP_PORT="587" `
+    YTA_SMTP_USERNAME="your-account@gmail.com" `
+    YTA_SMTP_PASSWORD="your-gmail-app-password" `
+    YTA_ALERT_FROM="your-account@gmail.com" `
+    YTA_ALERT_TO="your-alert-address@example.com"
 ```
 
-For production hygiene, put the password in Key Vault and reference it with
-`@Microsoft.KeyVault(...)` instead of a plaintext app setting — optional at
-this scale.
+For Gmail, use an App Password rather than your normal account password.
+Never commit credentials or put them in this document. For a production
+deployment, store the password in Azure Key Vault and reference it from the
+Function App configuration.
 
-## Step 5 — Deploy
+`YTA_CHANNEL_URL` accepts the same formats as the local CLI, including a
+handle, channel ID, or full channel URL.
+
+## 3. Deploy the application
+
+Run this command from the repository root, where `function_app.py` is located:
 
 ```powershell
-func azure functionapp publish <func-app-name>
+func azure functionapp publish $FUNCTION_APP
 ```
 
-## Step 6 — The on/off toggle (no code, no redeploy)
+The deployment includes `requirements.txt`, which installs the Azure Functions
+runtime package, Azure Tables SDK, and this `src/`-layout project.
 
-Azure Functions has a **native per-function disable switch** — this is your button.
+After deployment, open the Function App in the Azure portal and select
+**Functions** to confirm that `ScanTimer` is present. The first successful run
+creates the `ytastate` table and records the current video as a baseline, so it
+does not send an alert immediately after the first deployment.
 
-**Portal:** Function App → Functions → `ScanTimer` → **Disable** / **Enable**
-button at the top of the function's Overview page.
+## 4. Enable or disable scanning
 
-**CLI equivalent** (scriptable, e.g. from a phone via Cloud Shell):
+To pause only the timer without deleting the app, set the built-in disabled
+setting:
 
 ```powershell
-# Turn scanning OFF
-az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
+# Disable scanning
+az functionapp config appsettings set `
+  --resource-group $RESOURCE_GROUP `
+  --name $FUNCTION_APP `
   --settings "AzureWebJobs.ScanTimer.Disabled=true"
 
-# Turn scanning back ON
-az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
+# Enable scanning again
+az functionapp config appsettings set `
+  --resource-group $RESOURCE_GROUP `
+  --name $FUNCTION_APP `
   --settings "AzureWebJobs.ScanTimer.Disabled=false"
 ```
 
-This flips an app setting the Functions host checks before firing the timer —
-no redeploy, no code touch, and while disabled you pay **nothing** for that
-function (Consumption plan bills executions, not idle time).
+The same setting is available in the portal under **Function App > Functions >
+ScanTimer > Disable**. Disabling the timer prevents function executions, but
+the storage account and other enabled services can still incur charges.
 
-## Step 6b — Changing the YouTube channel (no code, no redeploy)
+## 5. Change the watched channel
 
-Since the channel is read from `YTA_CHANNEL_URL` on every run, switching the
-watched channel is the same kind of edit as the toggle — a config change, not
-a code change. Note the new channel takes effect on the *next* timer firing,
-and because the state table is keyed by channel, the first scan after a
-switch is treated as a fresh baseline (no notification), same as first-run
-behavior locally.
-
-**Portal:** Function App → Configuration → Application settings →
-`YTA_CHANNEL_URL` → edit the value → Save.
-
-**CLI equivalent:**
+Change `YTA_CHANNEL_URL` in **Function App > Configuration > Application
+settings**, save the change, and wait for the next timer run. The change does
+not require a code deployment.
 
 ```powershell
-az functionapp config appsettings set -g rg-youtube-alerts -n <func-app-name> `
+az functionapp config appsettings set `
+  --resource-group $RESOURCE_GROUP `
+  --name $FUNCTION_APP `
   --settings "YTA_CHANNEL_URL=@SomeOtherChannel"
 ```
 
-Accepts anything `normalize_channel_videos_url()` already accepts locally —
-`@handle`, bare name, `UC...` id, or a full channel URL.
+State is stored per normalized channel URL, so changing channels creates a new
+baseline and does not notify for the channel's existing latest video.
 
-## Cost breakdown
+## Cost considerations
 
-| Item | Monthly cost |
-|---|---|
-| Function executions (~8,640/month @ 1-2s each) | $0 — within free grant (1M exec + 400K GB-s) |
-| Storage account (Functions runtime + state table) | ~$0.05–$0.50 |
-| Application Insights | Skip it (don't enable) → $0 |
-| Email (Gmail SMTP) | $0 |
-| **Total** | **~$0–$1/month** |
+Consumption pricing depends on region, execution duration, storage usage, and
+whether optional monitoring is enabled. This workload is small, but Azure
+pricing and free grants can change. Check the current estimate for your
+subscription and region before deploying:
 
-## Step 7 — Cleanup (if you ever want to stop entirely)
+<https://azure.microsoft.com/pricing/details/functions/>
+
+The storage account is required by the Functions runtime and remains billable
+even when the timer is disabled. Application Insights is optional; enabling it
+may add ingestion charges.
+
+## Remove the deployment
+
+To delete the resources created by this guide:
 
 ```powershell
-az group delete -n rg-youtube-alerts --yes --no-wait
+az group delete --name $RESOURCE_GROUP --yes --no-wait
 ```
 
-Deletes everything (Function App + Storage Account) in one shot, no orphaned
-resources left behind to bill you.
+This removes the Function App and storage account in the resource group.
